@@ -2,62 +2,95 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Zombie Death Run v.11.4 | Multiplayer</title>
+    <title>Zombie Death Run | 8 Maps Edition</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <style>
         :root { --gold: #ffcc00; --zombie: #4ade80; }
-        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; }
-        #ui { position: absolute; width: 100%; height: 100%; pointer-events: none; z-index: 100; color: white; }
-        .window { pointer-events: auto; background: rgba(0,0,0,0.9); border: 3px solid var(--gold); padding: 30px; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; border-radius: 15px; min-width: 400px; }
-        .server-item { background: #222; margin: 10px; padding: 15px; display: flex; justify-content: space-between; cursor: pointer; border-radius: 8px; border: 1px solid #444; }
-        .hud { position: absolute; top: 20px; left: 20px; font-size: 24px; font-weight: bold; text-shadow: 2px 2px #000; }
-        .plus-btn { font-size: 50px; color: var(--gold); cursor: pointer; }
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; color: white; }
+        #ui { position: absolute; width: 100%; height: 100%; pointer-events: none; z-index: 100; }
+        .window { pointer-events: auto; background: rgba(0,0,0,0.95); border: 3px solid var(--gold); padding: 30px; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; border-radius: 15px; }
+        .hud { position: absolute; top: 20px; left: 20px; font-size: 20px; text-shadow: 2px 2px #000; }
+        .btn { background: var(--gold); color: #000; border: none; padding: 15px 30px; cursor: pointer; font-weight: bold; pointer-events: auto; }
         .hidden { display: none !important; }
     </style>
 </head>
 <body>
 
 <div id="ui">
-    <div id="browser-win" class="window">
-        <h1 style="color: var(--gold);">SERVER BROWSER</h1>
-        <div id="server-list">
-            <div class="server-item" onclick="joinRoom('Global-Lobby')"><span>Global Lobby</span> <span>SYNCING...</span></div>
-        </div>
-        <div class="plus-btn" onclick="createNewServer()">+</div>
+    <div id="menu" class="window">
+        <h1 style="color: var(--gold);">ZOMBIE RUN: 8 MAPS</h1>
+        <button class="btn" onclick="startGame()">START GAME</button>
     </div>
-
     <div id="hud" class="hud hidden">
-        COINS: <span id="coin-val">0</span> | <span id="role-name">RUNNER</span>
+        MAP: <span id="map-name">LOADING...</span> | ROLE: <span id="role-text">RUNNER</span>
     </div>
 </div>
 
 <script>
-/** 1. DATA & SYNC **/
-let socket;
-let account = JSON.parse(localStorage.getItem('zrun_v11') || '{"coins":0,"isZombie":false}');
+/** 1. CONFIG & MULTIPLAYER **/
+const RENDER_URL = "https://game-for-lirvex-online.onrender.com";
+let socket, scene, camera, renderer, player;
 let otherPlayers = {};
+let isPlaying = false;
+let account = JSON.parse(localStorage.getItem('zrun_save') || '{"isZombie":false}');
 
-// REPLACE THIS WITH YOUR RENDER URL AFTER DEPLOYING server.js
-const RENDER_URL = "https://your-app-name.onrender.com"; 
+// 8 Map Themes (ID -> Color)
+const MAP_THEMES = [
+    { name: "Lava Pit", color: 0xff4400 }, { name: "Neon Grid", color: 0x00ffff },
+    { name: "Frozen Lake", color: 0xffffff }, { name: "Toxic Sewers", color: 0x4ade80 },
+    { name: "Deep Void", color: 0x111111 }, { name: "Desert Run", color: 0xedc9af },
+    { name: "Factory X", color: 0x777777 }, { name: "Zombie Base", color: 0x330000 }
+];
 
-function connect(roomId) {
+function connect() {
     socket = io(RENDER_URL);
-    socket.emit('join_room', roomId);
+    socket.emit('join_room', 'global');
 
     socket.on('update_players', (data) => {
-        if (!otherPlayers[data.id]) createGhost(data.id, data.isZombie);
-        otherPlayers[data.id].position.set(data.x, 4.2, data.z);
+        if (!otherPlayers[data.id]) {
+            otherPlayers[data.id] = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), new THREE.MeshStandardMaterial());
+            scene.add(otherPlayers[data.id]);
+        }
+        
+        let other = otherPlayers[data.id];
+        other.position.set(data.x, 4.2, data.z);
+        other.material.color.set(data.isZombie ? 0x4ade80 : 0xffffff);
+
+        // 15-BLOCK INFECTION RULE
+        if (!account.isZombie && data.isZombie) {
+            let dist = player.position.distanceTo(other.position);
+            let blockGap = other.position.z - player.position.z; // Difference in forward travel
+            
+            if (dist < 1.5 && blockGap < 15) {
+                turnToZombie();
+            }
+        }
     });
 
-    socket.on('remove_player', (id) => {
-        if(otherPlayers[id]) { scene.remove(otherPlayers[id]); delete otherPlayers[id]; }
+    socket.on('map_change', (mapId) => {
+        loadMap(mapId);
     });
 }
 
-/** 2. THREE.JS GAME **/
-let scene, camera, renderer, player;
-let isPlaying = false, velocityY = 0, isGrounded = true, gameObjects = [];
+/** 2. GAME LOGIC **/
+function turnToZombie() {
+    account.isZombie = true;
+    localStorage.setItem('zrun_save', JSON.stringify(account));
+    player.children[1].material.color.set(0x4ade80); // Head turns green
+    document.getElementById('role-text').innerText = "ZOMBIE";
+    document.getElementById('role-text').style.color = "#4ade80";
+    socket.emit('move', { x: player.position.x, z: player.position.z, isZombie: true });
+}
+
+function loadMap(id) {
+    const theme = MAP_THEMES[id % 8];
+    document.getElementById('map-name').innerText = theme.name;
+    // Update floor color
+    scene.children.forEach(obj => {
+        if(obj.isFloor) obj.material.color.set(theme.color);
+    });
+}
 
 function init() {
     scene = new THREE.Scene();
@@ -67,54 +100,33 @@ function init() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
 
-    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-    sun.position.set(0, 50, -50);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 1);
+    sun.position.set(5, 10, 7);
     scene.add(sun);
-    scene.add(new THREE.AmbientLight(0x404040));
 
-    createPlayerModel();
-    generateLevel();
+    // Player
+    player = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1, 1.5, 0.5), new THREE.MeshStandardMaterial({color: 0x0066ff}));
+    const head = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.7), new THREE.MeshStandardMaterial({color: account.isZombie ? 0x4ade80 : 0xffdbac}));
+    head.position.y = 1.1;
+    player.add(body); player.add(head);
+    player.position.set(0, 4.2, 0);
+    scene.add(player);
+
+    // Initial Floor
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(10, 0.5, 2000), new THREE.MeshStandardMaterial({color: 0x333333}));
+    floor.position.y = 3;
+    floor.isFloor = true;
+    scene.add(floor);
+
     animate();
 }
 
-function createPlayerModel() {
-    if(player) scene.remove(player);
-    player = new THREE.Group();
-    const skin = account.isZombie ? 0x4ade80 : 0xffdbac;
-    const body = new THREE.Mesh(new THREE.BoxGeometry(1, 1.5, 0.6), new THREE.MeshStandardMaterial({color: account.isZombie ? 0x2d5a27 : 0x00ff00}));
-    const head = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.7), new THREE.MeshStandardMaterial({color: skin}));
-    head.position.y = 1.1;
-    player.add(body); player.add(head);
-
-    if(account.isZombie) { // Zombie Pose
-        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1, 0.3), new THREE.MeshStandardMaterial({color: 0x2d5a27}));
-        arm.position.set(0.7, 0.5, -0.5); arm.rotation.x = -Math.PI/2;
-        player.add(arm);
-    }
-
-    player.position.set(0, 4.2, 0);
-    scene.add(player);
-}
-
-function generateLevel() {
-    for(let i=0; i<100; i++) {
-        const b = new THREE.Mesh(new THREE.BoxGeometry(4, 0.5, 8), new THREE.MeshStandardMaterial({color: 0x333333}));
-        b.position.set(0, 3, -i * 10);
-        scene.add(b);
-        gameObjects.push(b);
-    }
-}
-
-function createGhost(id, zombieStatus) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), new THREE.MeshStandardMaterial({color: zombieStatus ? 0x4ade80 : 0xffffff}));
-    scene.add(mesh);
-    otherPlayers[id] = mesh;
-}
-
-function joinRoom(id) {
-    document.getElementById('browser-win').classList.add('hidden');
+function startGame() {
+    document.getElementById('menu').classList.add('hidden');
     document.getElementById('hud').classList.remove('hidden');
-    connect(id);
+    connect();
     isPlaying = true;
 }
 
@@ -123,13 +135,11 @@ function animate() {
     if(isPlaying) {
         player.position.z -= 0.15;
         if(socket) socket.emit('move', { x: player.position.x, z: player.position.z, isZombie: account.isZombie });
-        
-        camera.position.set(player.position.x, player.position.y + 5, player.position.z + 12);
+        camera.position.set(player.position.x, player.position.y + 5, player.position.z + 10);
         camera.lookAt(player.position);
     }
     renderer.render(scene, camera);
 }
-
 init();
 </script>
 </body>
